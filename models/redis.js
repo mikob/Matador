@@ -1,5 +1,3 @@
-'use strict';
-
 var _ = require("lodash"),
     Promise = require('bluebird'),
     q = require('q');
@@ -185,6 +183,8 @@ var getStatusCounts = function(){
     return dfd.promise;
 };
 
+var redisGetAll = Promise.promisify(redis.hgetall, redis);
+
 var formatKeys = function(keys){
     if(!keys) return;
 
@@ -194,6 +194,8 @@ var formatKeys = function(keys){
             getStatus("active").done(function(activeJobs){
                 getStatus("wait").done(function(pendingJobs){
                     var keyList = [];
+                    var promises = [];
+
                     for(var i = 0, ii = keys.length; i < ii; i++){
                         var explodedKeys = keys[i].split(":");
                         var status = "stuck";
@@ -201,10 +203,32 @@ var formatKeys = function(keys){
                         else if(completedJobs.keys[explodedKeys[1]] && completedJobs.keys[explodedKeys[1]].indexOf(explodedKeys[2]) !== -1) status = "complete";
                         else if(failedJobs.keys[explodedKeys[1]] && failedJobs.keys[explodedKeys[1]].indexOf(explodedKeys[2]) !== -1) status = "failed";
                         else if(pendingJobs.keys[explodedKeys[1]] && pendingJobs.keys[explodedKeys[1]].indexOf(explodedKeys[2]) !== -1) status = "pending";
-                        keyList.push({id: explodedKeys[2], type: explodedKeys[1], status: status});
+
+                        (function() {
+                            var type = explodedKeys[1];
+                            var firstPartOfKey = "bull:"+type+":";
+                            var id = explodedKeys[2];
+                            promises.push(redisGetAll(firstPartOfKey+id).bind(this).then(function(data){
+                                var title = 'N/A';
+
+                                try {
+                                    title = JSON.parse(data.data).title;
+                                } catch (e) {
+
+                                }
+
+                                keyList.push({id: id, type: type, status: status, title: title});
+                            }).catch(function() {
+                                keyList.push({id: id, type: type, status: status, title: 'N/A'});
+                            }));
+                        })();
                     }
+
                     keyList = _.sortBy(keyList, function(key){return parseInt(key.id);});
-                    dfd.resolve(keyList);
+
+                    Promise.all(promises).then(function() {
+                        dfd.resolve(keyList);
+                    });
                 });
             });
         });
@@ -350,9 +374,9 @@ var getDataById = function(type, id){
     var firstPartOfKey = "bull:"+type+":";
     var multi = [];
     redis.hgetall(firstPartOfKey+id, function(err, data){
-        if(err){
+        if (err) {
             dfd.resolve({success: false, message: err});
-        }else{
+        } else {
             dfd.resolve({success: true, message: data});
         }
     });
